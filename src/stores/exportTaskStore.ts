@@ -40,7 +40,7 @@ export interface ExportTaskStoreState {
   // ── Single export request (other pages → export page) ──
   pendingSingleExport: OpenSingleExportRequest | null
   requestSingleExport: (sessionId: string, sessionName?: string) => string
-  consumeSingleExport: () => OpenSingleExportRequest | null
+  consumeSingleExport: (requestId?: string) => OpenSingleExportRequest | null
 
   // ── Single export dialog feedback ──
   lastDialogStatus: SingleExportDialogStatus | null
@@ -71,14 +71,16 @@ export const useExportTaskStore = create<ExportTaskStoreState>((set, get) => ({
         sessionName,
         requestId,
         timestamp: Date.now()
-      }
+      },
+      lastDialogStatus: { requestId, status: 'initializing' }
     })
     return requestId
   },
 
-  consumeSingleExport: () => {
+  consumeSingleExport: (requestId) => {
     const current = get().pendingSingleExport
     if (!current) return null
+    if (requestId && current.requestId !== requestId) return null
     set({ pendingSingleExport: null })
     return current
   },

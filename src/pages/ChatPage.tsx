@@ -26,11 +26,10 @@ import {
   updateBackgroundTask
 } from '../services/backgroundTaskMonitor'
 import {
-  emitOpenSingleExport,
   onExportSessionStatus,
-  onSingleExportDialogStatus,
   requestExportSessionStatus
 } from '../services/exportBridge'
+import { useExportTaskStore } from '../stores/exportTaskStore'
 import ChatHeader from './Chat/ChatHeader'
 import ChatMessageBubble, { type MessageAvatarProfile } from './Chat/ChatMessageBubble'
 import { buildNewMessagesCursor } from './Chat/messageCursor'
@@ -1712,6 +1711,9 @@ function ChatPage(props: ChatPageProps) {
   const [isPreparingExportDialog, setIsPreparingExportDialog] = useState(false)
   const [chatSnsTimelineTarget, setChatSnsTimelineTarget] = useState<ContactSnsTimelineTarget | null>(null)
   const [exportPrepareHint, setExportPrepareHint] = useState('')
+  const requestSingleExport = useExportTaskStore(state => state.requestSingleExport)
+  const lastExportDialogStatus = useExportTaskStore(state => state.lastDialogStatus)
+  const clearExportDialogStatus = useExportTaskStore(state => state.clearDialogStatus)
   const avatarProfileRequestSeqRef = useRef(0)
   const [avatarProfileCard, setAvatarProfileCard] = useState<AvatarProfileCardState | null>(null)
 
@@ -2226,44 +2228,45 @@ function ChatPage(props: ChatPageProps) {
   }, [])
 
   useEffect(() => {
-    const unsubscribe = onSingleExportDialogStatus((payload) => {
-      const requestId = typeof payload?.requestId === 'string' ? payload.requestId.trim() : ''
-      if (!requestId || requestId !== pendingExportRequestIdRef.current) return
+    const payload = lastExportDialogStatus
+    if (!payload) return
+    const requestId = typeof payload?.requestId === 'string' ? payload.requestId.trim() : ''
+    if (!requestId || requestId !== pendingExportRequestIdRef.current) return
 
-      if (payload.status === 'initializing') {
-        setExportPrepareHint('正在准备导出模块（首次会稍慢，通常 1-3 秒）')
-        if (exportPrepareLongWaitTimerRef.current) {
-          window.clearTimeout(exportPrepareLongWaitTimerRef.current)
-        }
-        exportPrepareLongWaitTimerRef.current = window.setTimeout(() => {
-          if (pendingExportRequestIdRef.current !== requestId) return
-          setExportPrepareHint('仍在准备导出模块，请稍候...')
-        }, 8000)
-        return
-      }
-
-      if (payload.status === 'opened') {
-        clearExportPrepareState()
-        return
-      }
-
-      if (payload.status === 'failed') {
-        const message = (typeof payload.message === 'string' && payload.message.trim())
-          ? payload.message.trim()
-          : '导出模块初始化失败，请重试'
-        clearExportPrepareState()
-        window.alert(message)
-      }
-    })
-
-    return () => {
-      unsubscribe()
+    if (payload.status === 'initializing') {
+      setExportPrepareHint('正在准备导出模块（首次会稍慢，通常 1-3 秒）')
       if (exportPrepareLongWaitTimerRef.current) {
         window.clearTimeout(exportPrepareLongWaitTimerRef.current)
-        exportPrepareLongWaitTimerRef.current = null
       }
+      exportPrepareLongWaitTimerRef.current = window.setTimeout(() => {
+        if (pendingExportRequestIdRef.current !== requestId) return
+        setExportPrepareHint('仍在准备导出模块，请稍候...')
+      }, 8000)
+      return
     }
-  }, [clearExportPrepareState])
+
+    if (payload.status === 'opened') {
+      clearExportPrepareState()
+      clearExportDialogStatus()
+      return
+    }
+
+    if (payload.status === 'failed') {
+      const message = (typeof payload.message === 'string' && payload.message.trim())
+        ? payload.message.trim()
+        : '导出模块初始化失败，请重试'
+      clearExportPrepareState()
+      clearExportDialogStatus()
+      window.alert(message)
+    }
+  }, [clearExportDialogStatus, clearExportPrepareState, lastExportDialogStatus])
+
+  useEffect(() => () => {
+    if (exportPrepareLongWaitTimerRef.current) {
+      window.clearTimeout(exportPrepareLongWaitTimerRef.current)
+      exportPrepareLongWaitTimerRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     if (!isPreparingExportDialog || !currentSessionId) return
@@ -6696,8 +6699,8 @@ function ChatPage(props: ChatPageProps) {
     if (!currentSessionId) return
     if (inProgressExportSessionIds.has(currentSessionId) || isPreparingExportDialog) return
 
-    const requestId = `chat-export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const sessionName = displayNameOrFallback(currentSessionId, currentSession?.displayName, currentSession?.username)
+    const requestId = requestSingleExport(currentSessionId, sessionName)
     pendingExportRequestIdRef.current = requestId
     setIsPreparingExportDialog(true)
     setExportPrepareHint('')
@@ -6705,12 +6708,7 @@ function ChatPage(props: ChatPageProps) {
       window.clearTimeout(exportPrepareLongWaitTimerRef.current)
       exportPrepareLongWaitTimerRef.current = null
     }
-    emitOpenSingleExport({
-      sessionId: currentSessionId,
-      sessionName,
-      requestId
-    })
-  }, [currentSession, currentSessionId, inProgressExportSessionIds, isPreparingExportDialog])
+  }, [currentSession, currentSessionId, inProgressExportSessionIds, isPreparingExportDialog, requestSingleExport])
 
   const handleTriggerSessionInsight = useCallback(async () => {
     const session = currentSession

@@ -29,11 +29,7 @@ import type { TextExportFormat } from './types'
 import { getSelectionScopeFromRows, resolveScopeDisplayNames } from './utils/session'
 import { serializeExportDateRangeConfig } from '../../utils/exportDateRange'
 import { displayNameOrFallback, pickDisplayName } from '../../utils/displayName'
-import {
-  emitSingleExportDialogStatus,
-  onOpenSingleExport,
-  type OpenSingleExportPayload
-} from '../../services/exportBridge'
+import { useExportTaskStore, type OpenSingleExportRequest } from '../../stores/exportTaskStore'
 import './ExportPage.scss'
 
 function ExportPage() {
@@ -45,8 +41,10 @@ function ExportPage() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [isAutomationModalOpen, setIsAutomationModalOpen] = useState(false)
   const [draftAutomationPayload, setDraftAutomationPayload] = useState<any>(null)
-  const [pendingSingleExportRequest, setPendingSingleExportRequest] = useState<OpenSingleExportPayload | null>(null)
   const [metricsMapForSort, setMetricsMapForSort] = useState<Record<string, any>>({})
+  const pendingSingleExport = useExportTaskStore(state => state.pendingSingleExport)
+  const consumeSingleExport = useExportTaskStore(state => state.consumeSingleExport)
+  const setDialogStatus = useExportTaskStore(state => state.setDialogStatus)
 
   const { 
     isLoaded: isConfigLoaded,
@@ -150,7 +148,7 @@ function ExportPage() {
   // ── 4. Dialog & Exports ──
   const { dialogState, openDialog, closeDialog } = useExportDialog()
 
-  const resolveSingleExportName = useCallback((payload: OpenSingleExportPayload) => {
+  const resolveSingleExportName = useCallback((payload: OpenSingleExportRequest) => {
     const sessionId = String(payload.sessionId || '').trim()
     const payloadName = pickDisplayName(payload.sessionName)
     const sessionRow = sessions.find(s => s.username === sessionId)
@@ -233,13 +231,14 @@ function ExportPage() {
     })
   }, [displayedSessions, options.displayNamePreference, openDialog])
 
-  const handleOpenSingleExportRequest = useCallback((payload: OpenSingleExportPayload) => {
+  const handleOpenSingleExportRequest = useCallback((payload: OpenSingleExportRequest) => {
     const requestId = typeof payload?.requestId === 'string' ? payload.requestId.trim() : ''
     const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : ''
 
     if (!requestId || !sessionId) {
       if (requestId) {
-        emitSingleExportDialogStatus({
+        consumeSingleExport(requestId)
+        setDialogStatus({
           requestId,
           status: 'failed',
           message: '无法打开导出配置：缺少会话信息'
@@ -248,18 +247,11 @@ function ExportPage() {
       return
     }
 
-    emitSingleExportDialogStatus({ requestId, status: 'initializing' })
+    if (!isConfigLoaded) return
+    const request = consumeSingleExport(requestId)
+    if (!request) return
 
-    if (!isConfigLoaded) {
-      setPendingSingleExportRequest({
-        ...payload,
-        requestId,
-        sessionId
-      })
-      return
-    }
-
-    const sessionName = resolveSingleExportName(payload)
+    const sessionName = resolveSingleExportName(request)
     setSelectedSessionIds(new Set([sessionId]))
     setActiveTab(sessionId.includes('@chatroom') ? 'group' : 'private')
     navigate('/export')
@@ -272,18 +264,13 @@ function ExportPage() {
       title: `导出: ${sessionName}`
     })
 
-    emitSingleExportDialogStatus({ requestId, status: 'opened' })
-  }, [isConfigLoaded, navigate, openDialog, resolveSingleExportName, setActiveTab])
+    setDialogStatus({ requestId, status: 'opened' })
+  }, [consumeSingleExport, isConfigLoaded, navigate, openDialog, resolveSingleExportName, setActiveTab, setDialogStatus])
 
   useEffect(() => {
-    return onOpenSingleExport(handleOpenSingleExportRequest)
-  }, [handleOpenSingleExportRequest])
-
-  useEffect(() => {
-    if (!isConfigLoaded || !pendingSingleExportRequest) return
-    setPendingSingleExportRequest(null)
-    handleOpenSingleExportRequest(pendingSingleExportRequest)
-  }, [handleOpenSingleExportRequest, isConfigLoaded, pendingSingleExportRequest])
+    if (!pendingSingleExport) return
+    handleOpenSingleExportRequest(pendingSingleExport)
+  }, [handleOpenSingleExportRequest, pendingSingleExport])
 
   const handleConfirmExport = useCallback((finalOptions: any) => {
     updateOptions(finalOptions)

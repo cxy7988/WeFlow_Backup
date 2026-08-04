@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'worker_threads'
-import { runWeliveExport, type WeliveExportEvent } from './services/weliveBridge'
+import { getWeliveEngineUnavailableReason, runWeliveExport, type WeliveExportEvent } from './services/weliveBridge'
 
 interface ExportWorkerConfig {
   mode?: 'sessions' | 'single' | 'contacts'
@@ -17,6 +17,8 @@ interface ExportWorkerConfig {
   imageXorKey?: unknown
   imageAesKey?: string
   resourcesPath?: string
+  processResourcesPath?: string
+  appPath?: string
   userDataPath?: string
   cachePath?: string
   emojiCacheDir?: string
@@ -24,6 +26,7 @@ interface ExportWorkerConfig {
   isPackaged?: boolean
   welivePath?: string
   weliveArgsPrefix?: string[]
+  weliveEnabled?: boolean
 }
 
 const config = workerData as ExportWorkerConfig
@@ -139,15 +142,20 @@ process.env.WEFLOW_WORKER = '1'
 if (config.resourcesPath) {
   process.env.WCDB_RESOURCES_PATH = config.resourcesPath
 }
+if (config.processResourcesPath && !process.resourcesPath) {
+  ;(process as NodeJS.Process & { resourcesPath?: string }).resourcesPath = config.processResourcesPath
+}
 if (config.userDataPath) {
   process.env.WEFLOW_USER_DATA_PATH = config.userDataPath
   process.env.WEFLOW_CONFIG_CWD = config.userDataPath
 }
 process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
 
-// 消息导出强制走 WeLive 引擎（不提供 legacy 回退开关）；
-// 仅联系人导出仍由 worker 内置流程处理。
-const shouldUseWeliveEngine = () => config.mode !== 'contacts'
+// 主进程会在本次应用生命周期内记住不兼容结果；联系人导出始终走内置流程。
+const shouldUseWeliveEngine = () => config.mode !== 'contacts' && config.weliveEnabled !== false
+
+const getRuntimeResourcesPath = () => String(config.processResourcesPath || config.resourcesPath || '')
+const getRuntimeAppPath = () => String(config.appPath || (config.resourcesPath ? require('path').dirname(config.resourcesPath) : __dirname))
 
 const normalizeImageXorKey = (value: unknown): string | number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -241,24 +249,6 @@ const mapWeliveEventToProgress = (event: WeliveExportEvent): any | null => {
   }
 }
 
-const collectWeliveErrorText = (result: any): string => {
-  const parts = [
-    result?.error,
-    result?.stderr,
-    ...Object.values(result?.failedSessionErrors || {})
-  ]
-  return parts
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-    .join('\n')
-}
-
-const isWeliveNativeCrashResult = (result: any): boolean => {
-  if (!result || result.success) return false
-  const text = collectWeliveErrorText(result)
-  return /3221225477|0x?c0000005|-1073741819/i.test(text)
-}
-
 async function runWeliveEngine() {
   const path = require('path') as typeof import('path')
   const fs = require('fs') as typeof import('fs')
@@ -283,8 +273,8 @@ async function runWeliveEngine() {
     accountDir: config.accountDir,
     imageXorKey: config.imageXorKey,
     imageAesKey: config.imageAesKey,
-    resourcesPath: config.resourcesPath,
-    appPath: config.resourcesPath ? path.dirname(config.resourcesPath) : __dirname,
+    resourcesPath: getRuntimeResourcesPath(),
+    appPath: getRuntimeAppPath(),
     isPackaged: config.isPackaged
   })
   wcdbService.setPaths(String(config.resourcesPath || ''), String(config.userDataPath || ''))
@@ -361,7 +351,7 @@ async function runWeliveEngine() {
     const sessionId = sessionIds[index]
     const result = await runWeliveExport({
       resourcesPath: String(config.resourcesPath || ''),
-      appPath: config.resourcesPath ? path.dirname(config.resourcesPath) : __dirname,
+      appPath: getRuntimeAppPath(),
       welivePath: config.welivePath,
       weliveArgsPrefix: Array.isArray(config.weliveArgsPrefix) ? config.weliveArgsPrefix : undefined,
       request: {
@@ -408,6 +398,21 @@ async function runWeliveEngine() {
     })
 
     if (!result.success) {
+      const unavailableReason = getWeliveEngineUnavailableReason(result)
+      if (unavailableReason) {
+        fs.rmSync(rawRoot, { recursive: true, force: true })
+        return {
+          success: false,
+          successCount: 0,
+          failCount: sessionIds.length,
+          failedSessionIds: sessionIds,
+          failedSessionErrors: Object.fromEntries(sessionIds.map((id) => [id, unavailableReason])),
+          sessionOutputPaths: {},
+          weliveEngineUnavailable: true,
+          weliveEngineUnavailableReason: unavailableReason,
+          error: unavailableReason
+        }
+      }
       failedSessionIds.push(sessionId)
       failedSessionErrors[sessionId] = String(result.failedSessionErrors?.[sessionId] || result.error || 'WeLive export failed')
       continue
@@ -494,10 +499,11 @@ async function runLegacyEngine() {
     dbPath: config.dbPath,
     decryptKey: config.decryptKey,
     myWxid: config.myWxid,
+    accountDir: config.accountDir,
     imageXorKey: config.imageXorKey,
     imageAesKey: config.imageAesKey,
-    resourcesPath: config.resourcesPath,
-    appPath: config.resourcesPath ? require('path').dirname(config.resourcesPath) : __dirname,
+    resourcesPath: getRuntimeResourcesPath(),
+    appPath: getRuntimeAppPath(),
     isPackaged: config.isPackaged
   })
 
@@ -522,8 +528,8 @@ async function runLegacyEngine() {
       dbPath: config.dbPath,
       decryptKey: config.decryptKey,
       myWxid: config.myWxid,
-      resourcesPath: config.resourcesPath,
-      appPath: config.resourcesPath ? require('path').dirname(config.resourcesPath) : __dirname,
+      resourcesPath: getRuntimeResourcesPath(),
+      appPath: getRuntimeAppPath(),
       isPackaged: config.isPackaged
     })
     result = await contactExportService.exportContacts(
@@ -574,7 +580,7 @@ async function runLegacyEngine() {
 async function run() {
   if (shouldUseWeliveEngine()) {
     const result = await runWeliveEngine()
-    if (!isWeliveNativeCrashResult(result)) {
+    if (!result?.weliveEngineUnavailable) {
       flushProgress()
       flushCreatedPaths()
       parentPort?.postMessage({
@@ -584,11 +590,16 @@ async function run() {
       return
     }
 
+    parentPort?.postMessage({
+      type: 'export:weliveUnavailable',
+      reason: String(result.weliveEngineUnavailableReason || result.error || 'WeLive 导出引擎不可用')
+    })
+
     queueProgress({
       current: 0,
       total: Array.isArray(config.sessionIds) ? config.sessionIds.length : 1,
       phase: 'preparing',
-      phaseLabel: 'WeLive 导出引擎异常退出，正在切换兼容导出引擎'
+      phaseLabel: 'WeLive 导出引擎不兼容，正在切换 WCDB 导出引擎'
     })
     flushProgress()
     flushCreatedPaths()

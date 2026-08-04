@@ -76,6 +76,13 @@ const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
 let configService: ConfigService | null = null
 const activeExportWorkers = new Map<string, Worker>()
 const activeExportTasks = new Set<string>()
+let weliveExportEngineAvailable = true
+
+const markWeliveExportEngineUnavailable = (reason: unknown) => {
+  if (!weliveExportEngineAvailable) return
+  weliveExportEngineAvailable = false
+  console.warn(`[export-worker] WeLive disabled for this app session: ${String(reason || 'unknown reason')}`)
+}
 
 type ResourceDiagnosticsEntry = {
   ts: number
@@ -3620,6 +3627,8 @@ function registerIpcHandlers() {
     const resourcesPath = app.isPackaged
       ? join(process.resourcesPath, 'resources')
       : join(app.getAppPath(), 'resources')
+    const processResourcesPath = process.resourcesPath
+    const appPath = app.getAppPath()
     const userDataPath = app.getPath('userData')
     const cachePath = String(cfg.get('cachePath') || '').trim()
     const emojiCacheDir = cachePath ? join(cachePath, 'Emojis') : join(app.getPath('documents'), 'WeFlow', 'Emojis')
@@ -3640,11 +3649,14 @@ function registerIpcHandlers() {
             imageXorKey: imageKeys.xorKey,
             imageAesKey: imageKeys.aesKey,
             resourcesPath,
+            processResourcesPath,
+            appPath,
             userDataPath,
             cachePath,
             emojiCacheDir,
             logEnabled,
-            isPackaged: app.isPackaged
+            isPackaged: app.isPackaged,
+            weliveEnabled: weliveExportEngineAvailable
           }
         })
 
@@ -3674,6 +3686,10 @@ function registerIpcHandlers() {
         }
 
         worker.on('message', (msg: any) => {
+          if (msg && msg.type === 'export:weliveUnavailable') {
+            markWeliveExportEngineUnavailable(msg.reason)
+            return
+          }
           if (msg && msg.type === 'export:progress') {
             onProgress(msg.data as ExportProgress)
             return
@@ -3780,11 +3796,14 @@ function registerIpcHandlers() {
             imageXorKey: imageKeys.xorKey,
             imageAesKey: imageKeys.aesKey,
             resourcesPath: app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources'),
+            processResourcesPath: process.resourcesPath,
+            appPath: app.getAppPath(),
             userDataPath: app.getPath('userData'),
             cachePath: singleCachePath,
             emojiCacheDir: singleEmojiCacheDir,
             logEnabled: cfg.get('logEnabled'),
-            isPackaged: app.isPackaged
+            isPackaged: app.isPackaged,
+            weliveEnabled: weliveExportEngineAvailable
           }
         })
 
@@ -3803,6 +3822,10 @@ function registerIpcHandlers() {
         }
 
         worker.on('message', (msg: any) => {
+          if (msg && msg.type === 'export:weliveUnavailable') {
+            markWeliveExportEngineUnavailable(msg.reason)
+            return
+          }
           if (msg && msg.type === 'export:progress') {
             if (!event.sender.isDestroyed()) {
               event.sender.send('export:progress', msg.data)
@@ -3850,6 +3873,8 @@ function registerIpcHandlers() {
             decryptKey: String(cfg.get('decryptKey') || '').trim(),
             myWxid: String(cfg.getMyWxidCleaned() || '').trim(),
             resourcesPath: app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources'),
+            processResourcesPath: process.resourcesPath,
+            appPath: app.getAppPath(),
             userDataPath: app.getPath('userData'),
             logEnabled: cfg.get('logEnabled'),
             isPackaged: app.isPackaged

@@ -7,6 +7,7 @@ import HomePage from './pages/HomePage'
 
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
+import { useExportTaskStore } from './stores/exportTaskStore'
 import * as configService from './services/config'
 import * as cloudControl from './services/cloudControl'
 import { Shield } from 'lucide-react'
@@ -95,6 +96,7 @@ function App() {
     ? settingsRouteState?.backgroundLocation ?? settingsBackgroundRef.current
     : location
   const isExportRoute = routeLocation.pathname === '/export'
+  const pendingSingleExport = useExportTaskStore(state => state.pendingSingleExport)
   // Export 模块按需挂载：首次进入导出页，或存在启用的自动化任务（调度器在导出页内）时才挂载
   const [exportMounted, setExportMounted] = useState(false)
   const [themeHydrated, setThemeHydrated] = useState(false)
@@ -131,8 +133,8 @@ function App() {
     location.pathname === '/image-viewer-window'
 
   useEffect(() => {
-    if (isExportRoute && !exportMounted) setExportMounted(true)
-  }, [isExportRoute, exportMounted])
+    if ((isExportRoute || pendingSingleExport) && !exportMounted) setExportMounted(true)
+  }, [isExportRoute, pendingSingleExport, exportMounted])
 
   // 存在启用的自动化导出任务时，即使未访问导出页也需挂载（30s 调度器运行在导出页内）
   useEffect(() => {

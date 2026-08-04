@@ -37,7 +37,7 @@ import { getMediaFileStat } from '../../export/media/attachmentResolver';
 
 export class ExportContext {
     private configService: ConfigService;
-    private runtimeConfig: { dbPath?: string; decryptKey?: string; myWxid?: string; accountDir?: string; imageXorKey?: unknown; imageAesKey?: string } | null = null;
+    private runtimeConfig: { dbPath?: string; decryptKey?: string; myWxid?: string; accountDir?: string; imageXorKey?: unknown; imageAesKey?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean } | null = null;
     private contactCache: LRUCache<string, { displayName: string; avatarUrl?: string }>;
     private inlineEmojiCache: LRUCache<string, string>;
     private htmlStyleCache: string | null = null;
@@ -1345,7 +1345,7 @@ export class ExportContext {
         if (!decryptKey) return { success: false, error: '请先在设置页面配置解密密钥' }
 
         const cleanedWxid = this.cleanAccountDirName(wxid);
-        const accountDir = this.configService.getAccountDir(dbPath, wxid);
+        const accountDir = this.getConfiguredAccountDir();
         if (!accountDir) return { success: false, error: '无法找到账号目录' }
 
         const ok = await wcdbService.open(accountDir, decryptKey);

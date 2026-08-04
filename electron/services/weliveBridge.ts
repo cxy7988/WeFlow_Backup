@@ -80,6 +80,46 @@ export interface WeliveExportResult {
   diagnostics?: Record<string, unknown>
 }
 
+export function getWeliveEngineUnavailableReason(result: WeliveExportResult): string | null {
+  if (!result || result.success) return null
+
+  const errorText = [
+    result.error,
+    result.stderr,
+    ...Object.values(result.failedSessionErrors || {}),
+    result.rawResult ? JSON.stringify(result.rawResult) : '',
+    result.diagnostics ? JSON.stringify(result.diagnostics) : ''
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join('\n')
+
+  if (/this build has expired/i.test(errorText)) {
+    return 'WeLive 导出引擎版本已过期'
+  }
+  if (/(?:^|[^\d])-101(?:[^\d]|$)/i.test(errorText)) {
+    return 'WeLive 原生握手失败（-101）'
+  }
+  if (/(?:proof|finish).{0,80}(?:fail(?:ed|ure)?|error|失败)|(?:fail(?:ed|ure)?|error|失败).{0,80}(?:proof|finish)/i.test(errorText)) {
+    return 'WeLive 原生握手 Proof/Finish 阶段失败'
+  }
+  if (/未找到 WeLive 导出引擎/i.test(errorText)) {
+    return '未找到 WeLive 导出引擎'
+  }
+
+  const diagnostics = result.diagnostics || {}
+  const exitCode = diagnostics.code
+  const signal = diagnostics.signal
+  if (diagnostics.kind === 'spawn-error') {
+    return 'WeLive 导出引擎子进程启动失败'
+  }
+  if ((typeof exitCode === 'number' && exitCode !== 0) || signal) {
+    return `WeLive 导出引擎子进程异常退出${diagnostics.exit ? `：${diagnostics.exit}` : ''}`
+  }
+
+  return null
+}
+
 const platformDir = () => {
   if (process.platform === 'win32') return 'win32'
   if (process.platform === 'darwin') return 'macos'
@@ -266,6 +306,7 @@ export async function runWeliveExport(options: RunWeliveExportOptions): Promise<
         rawResult,
         error: error.message,
         diagnostics: {
+          kind: 'spawn-error',
           exe,
           platform: process.platform,
           arch: process.arch,
